@@ -1,0 +1,232 @@
+name: OCI Ubuntu ARM Instance Auto-Manager
+
+# 触发条件
+on:
+  # 定时触发：每小时运行一次（整点执行）
+  schedule:
+    - cron: '0 * * * *'
+  # 手动触发：允许通过GitHub界面手动运行
+  workflow_dispatch:
+    inputs:
+      manual_trigger_reason:
+        description: '手动触发原因'
+        required: false
+        default: '测试或紧急操作'
+
+jobs:
+  manage-oci-instances:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    
+    steps:
+      # ==========================================================================
+      # 步骤1：检出代码仓库
+      # ==========================================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ==========================================================================
+      # 步骤2：配置OCI认证信息
+      # 所需Secrets：
+      # - OCI_USER: Oracle Cloud用户OCID
+      # - OCI_TENANCY: Oracle Cloud租户OCID
+      # - OCI_FINGERPRINT: API密钥指纹
+      # - OCI_REGION: 区域标识符（如：us-ashburn-1）
+      # - OCI_PRIVATE_KEY: API私钥内容（PEM格式）
+      # ==========================================================================
+      - name: Configure OCI authentication
+        run: |
+          echo "=== 配置OCI认证信息 ==="
+          
+          # 创建OCI配置目录
+          mkdir -p ~/.oci
+          
+          # 生成OCI配置文件
+          cat > ~/.oci/config << 'CONFIG_EOF'
+          [DEFAULT]
+          user=${{ secrets.OCI_USER }}
+          tenancy=${{ secrets.OCI_TENANCY }}
+          fingerprint=${{ secrets.OCI_FINGERPRINT }}
+          region=${{ secrets.OCI_REGION }}
+          key_file=~/.oci/oci_api_key.pem
+          CONFIG_EOF
+          
+          # 保存API私钥
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
+          
+          # 设置文件权限（安全要求）
+          chmod 600 ~/.oci/config
+          chmod 600 ~/.oci/oci_api_key.pem
+          
+          echo "✅ OCI认证配置完成"
+
+      # ==========================================================================
+      # 步骤3：安装OCI CLI工具
+      # ==========================================================================
+      - name: Install OCI CLI
+        run: |
+          echo "=== 安装OCI CLI工具 ==="
+          
+          # 下载并安装OCI CLI
+          curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh | bash -s -- --accept-all-defaults
+          
+          # 配置环境变量
+          echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc
+          source ~/.bashrc
+          
+          # 验证安装
+          oci --version
+          echo "✅ OCI CLI安装完成"
+
+      # ==========================================================================
+      # 步骤4：检查实例状态
+      # 逻辑：如果存在任何状态的实例，终止工作流
+      # ==========================================================================
+      - name: Check instance existence
+        run: |
+          echo "=== 检查是否存在任何实例 ==="
+          
+          # 获取所有实例（不限状态）
+          echo "正在查询所有实例..."
+          instances=$(oci compute instance list \
+            --compartment-id ${{ secrets.OCI_TENANCY }} \
+            --query 'data[*].{id:id, name:"display-name", shape:shape, state:"lifecycle-state"}' \
+            --raw-output)
+          
+          # 统计实例数量
+          instance_count=$(echo $instances | jq length)
+          echo "发现 $instance_count 个实例"
+          
+          if [ $instance_count -gt 0 ]; then
+            echo "实例列表："
+            echo $instances | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
+            echo "❌ 发现已存在的实例，终止工作流"
+            echo "原因：每个租户只允许存在一个实例，创建新实例前需确保无其他实例"
+            exit 1
+          else
+            echo "✅ 没有发现任何实例，继续执行"
+          fi
+
+      # ==========================================================================
+      # 步骤5：创建新的Ubuntu ARM实例（4C24G）
+      # 所需Secrets：
+      # - SSH_PUBLIC_KEY: 用于SSH登录的公钥
+      # ==========================================================================
+      - name: Create new Ubuntu ARM instance (4C24G)
+        run: |
+          echo "=== 创建新的Ubuntu ARM实例 ==="
+          echo "配置信息："
+          echo "- 实例类型：VM.Standard.A1.Flex"
+          echo "- CPU配置：4 OCPU"
+          echo "- 内存配置：24 GB"
+          echo "- 架构类型：ARM (Ampere A1)"
+          echo "- 操作系统：Canonical Ubuntu 22.04 Minimal aarch64"
+          echo "- 网络配置：分配公网IP"
+          echo "- 符合Oracle Cloud始终免费条件"
+          
+          # 获取可用性域
+          echo "正在获取可用性域..."
+          ad=$(oci iam availability-domain list \
+            --compartment-id ${{ secrets.OCI_TENANCY }} \
+            --query 'data[0]."name"' \
+            --raw-output)
+          echo "使用可用性域：$ad"
+          
+          # 获取Ubuntu 22.04 Minimal ARM镜像
+          echo "正在查找Ubuntu 22.04 Minimal ARM镜像..."
+          image_id=$(oci compute image list \
+            --compartment-id ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z \
+            --operating-system "Canonical Ubuntu" \
+            --operating-system-version "22.04" \
+            --architecture "ARM" \
+            --query "data[] | select(.['display-name'] | contains('Minimal')).id" \
+            --raw-output | head -n 1)
+          
+          # 如果找不到Minimal版本，使用标准版本
+          if [ -z "$image_id" ] || [ "$image_id" == "null" ]; then
+            echo "⚠️ 未找到Minimal版本，使用标准版本..."
+            image_id=$(oci compute image list \
+              --compartment-id ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z \
+              --operating-system "Canonical Ubuntu" \
+              --operating-system-version "22.04" \
+              --architecture "ARM" \
+              --query 'data[0].id' \
+              --raw-output)
+          fi
+          
+          echo "使用镜像ID：$image_id"
+          
+          # 获取网络配置
+          echo "正在获取网络配置..."
+          vcn_id=$(oci network vcn list \
+            --compartment-id ${{ secrets.OCI_TENANCY }} \
+            --query 'data[0]."id"' \
+            --raw-output)
+          subnet_id=$(oci network subnet list \
+            --compartment-id ${{ secrets.OCI_TENANCY }} \
+            --vcn-id $vcn_id \
+            --query 'data[0]."id"' \
+            --raw-output)
+          
+          # 生成唯一实例名称
+          instance_name="ubuntu-arm-4c24g-$(date +%Y%m%d-%H%M%S)"
+          
+          # 启动实例
+          echo "正在启动实例，请稍候..."
+          instance_response=$(oci compute instance launch \
+            --availability-domain "$ad" \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --shape "VM.Standard.A1.Flex" \
+            --shape-config '{"ocpus": 4, "memoryInGBs": 24}' \
+            --display-name "$instance_name" \
+            --image-id "$image_id" \
+            --subnet-id "$subnet_id" \
+            --ssh-authorized-keys-file <(echo "${{ secrets.SSH_PUBLIC_KEY }}") \
+            --assign-public-ip true \
+            --query 'data' \
+            --raw-output)
+          
+          # 解析实例信息
+          instance_id=$(echo "$instance_response" | jq -r '.id')
+          lifecycle_state=$(echo "$instance_response" | jq -r '["lifecycle-state"]')
+          private_ip=$(echo "$instance_response" | jq -r '.primary_vnic["private-ip"]')
+          
+          echo "✅ 实例创建成功！"
+          echo "- 实例ID：$instance_id"
+          echo "- 当前状态：$lifecycle_state"
+          echo "- 私有IP：$private_ip"
+          
+          # 等待实例完全启动
+          echo "等待实例完全启动（最多等待5分钟）..."
+          sleep 300
+          
+          # 获取公网IP
+          echo "正在获取公网IP..."
+          public_ip=$(oci compute instance list-vnics \
+            --instance-id "$instance_id" \
+            --query 'data[0]."public-ip"' \
+            --raw-output)
+          
+          # 输出连接信息
+          echo "📋 实例连接信息："
+          echo "- 实例名称：$instance_name"
+          echo "- 实例ID：$instance_id"
+          echo "- 实例状态：$(oci compute instance get --instance-id $instance_id --query 'data["lifecycle-state"]' --raw-output)"
+          echo "- 私有IP：$private_ip"
+          echo "- 公网IP：$public_ip"
+          echo "- SSH用户名：ubuntu"
+          echo "- SSH连接命令：ssh ubuntu@$public_ip"
+          echo "- 注意：首次连接可能需要等待几分钟"
+
+      # # ==========================================================================
+      # # 步骤6：上传实例信息
+      # # ==========================================================================
+      # - name: Upload instance information
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: ubuntu-arm-instance-details
+      #     path: instance_details.json
+      #     retention-days: 7
