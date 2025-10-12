@@ -103,36 +103,36 @@ jobs:
         run: |
           echo "=== 预检 OCI 配置 ==="
           set -e
+          echo "检查代码已注释，不生效，避免暴露信息"
+          # # 打印当前 config（不要把私钥上传到日志）
+          # echo "=== ~/.oci/config (first 40 lines) ==="
+          # sed -n '1,40p' ~/.oci/config || true
 
-          # 打印当前 config（不要把私钥上传到日志）
-          echo "=== ~/.oci/config (first 40 lines) ==="
-          sed -n '1,40p' ~/.oci/config || true
+          # # 验证用户（应返回 user data）
+          # echo "=== oci iam user get ==="
+          # oci iam user get --user-id "${{ secrets.OCI_USER }}" --raw-output || echo "user get failed (see above)"
 
-          # 验证用户（应返回 user data）
-          echo "=== oci iam user get ==="
-          oci iam user get --user-id "${{ secrets.OCI_USER }}" --raw-output || echo "user get failed (see above)"
+          # # 检查 compartment 是否存在并返回详情（这是目前失败的调用）
+          # echo "=== oci iam compartment get ==="
+          # oci iam compartment get --compartment-id "${{secrets.OCI_TENANCY}}" --raw-output || echo "compartment get failed (可能是 OCID 错/无权限)"
 
-          # 检查 compartment 是否存在并返回详情（这是目前失败的调用）
-          echo "=== oci iam compartment get ==="
-          oci iam compartment get --compartment-id "${{secrets.OCI_TENANCY}}" --raw-output || echo "compartment get failed (可能是 OCID 错/无权限)"
+          # # 在 tenancy 下列出所有 compartments（用来在列表中确认你使用的 OCID）
+          # echo "=== list compartments under tenancy ==="
+          # oci iam compartment list --compartment-id "${{secrets.OCI_TENANCY}}" --all --output table || echo "compartment list failed (权限?)"
 
-          # 在 tenancy 下列出所有 compartments（用来在列表中确认你使用的 OCID）
-          echo "=== list compartments under tenancy ==="
-          oci iam compartment list --compartment-id "${{secrets.OCI_TENANCY}}" --all --output table || echo "compartment list failed (权限?)"
+          # # 列出当前用户所属的组（用于确认用户属于哪个组）
+          # echo "=== groups for user ==="
+          # oci iam user list-groups --user-id "${{ secrets.OCI_USER }}" --raw-output || echo "list-groups failed (权限?)"
 
-          # 列出当前用户所属的组（用于确认用户属于哪个组）
-          echo "=== groups for user ==="
-          oci iam user list-groups --user-id "${{ secrets.OCI_USER }}" --raw-output || echo "list-groups failed (权限?)"
+          # # 列出 tenancy 下的 policy（帮助查看是否存在授予所属组访问该 compartment 的策略）
+          # echo "=== policy list in tenancy ==="
+          # oci iam policy list --compartment-id "${{secrets.OCI_TENANCY}}" --all --output table || echo "policy list failed (权限?)"
 
-          # 列出 tenancy 下的 policy（帮助查看是否存在授予所属组访问该 compartment 的策略）
-          echo "=== policy list in tenancy ==="
-          oci iam policy list --compartment-id "${{secrets.OCI_TENANCY}}" --all --output table || echo "policy list failed (权限?)"
+          # # 作为最终测试，尝试对目标 compartment 列出 compute 实例（这一步如果权限缺会报 NotAuthorizedOrNotFound）
+          # echo "=== compute instance list (test) ==="
+          # oci compute instance list --compartment-id "${{secrets.OCI_TENANCY}}" --all --output table || echo "compute list failed"
 
-          # 作为最终测试，尝试对目标 compartment 列出 compute 实例（这一步如果权限缺会报 NotAuthorizedOrNotFound）
-          echo "=== compute instance list (test) ==="
-          oci compute instance list --compartment-id "${{secrets.OCI_TENANCY}}" --all --output table || echo "compute list failed"
-
-          echo "✅ 预检通过：OCI 配置看起来正常"
+          # echo "✅ 预检通过：OCI 配置看起来正常"
 
       # ==========================================================================
       # 步骤4：检查实例状态
@@ -211,24 +211,8 @@ jobs:
             --raw-output)
           echo "使用可用性域：$ad"
           
-          # 获取Ubuntu 22.04 Minimal ARM镜像（更健壮的查找逻辑）
-          echo "正在查找Ubuntu 22.04 Minimal ARM镜像（优先在租户内查找）..."
-
-          # 先在当前 tenancy 下搜索（有些环境会把共享镜像复制到租户）
+          # 获取Ubuntu 22.04 Minimal ARM镜像
           image_id=$(oci compute image list \
-            --compartment-id "${{secrets.OCI_TENANCY}}" \
-            --operating-system "Canonical Ubuntu" \
-            --operating-system-version "22.04" \
-            --architecture "ARM" \
-            --all \
-            --query "data[?contains(display-name, 'Minimal')].id | [0]" \
-            --raw-output)
-
-          # 如果没有找到，再尝试 Canonical 的公共镜像租户（硬编码为公共镜像提供者 OCID）
-          if [ -z "$image_id" ] || [ "$image_id" == "null" ]; then
-            echo "未在租户中找到 Minimal 镜像，尝试公共 Canonical 镜像租户..."
-            image_owner_ocid="ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z"
-            image_id=$(oci compute image list \
               --compartment-id "$image_owner_ocid" \
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
@@ -236,13 +220,14 @@ jobs:
               --all \
               --query "data[?contains(display-name, 'Minimal')].id | [0]" \
               --raw-output)
-          fi
+              
+          echo "$images_json" | jq -r '.[] | "- \(.id)\t\(.name)"' || true
 
           # 如果仍未找到 Minimal 版本，回退到第一个匹配的 Ubuntu 22.04 ARM 镜像
           if [ -z "$image_id" ] || [ "$image_id" == "null" ]; then
             echo "⚠️ 未找到 Minimal 版本，回退到任意 Ubuntu 22.04 ARM 镜像..."
             image_id=$(oci compute image list \
-              --compartment-id "${image_owner_ocid:-${{secrets.OCI_TENANCY}}}" \
+              --compartment-id "$image_owner_ocid" \
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
               --architecture "ARM" \
