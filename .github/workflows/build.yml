@@ -214,9 +214,9 @@ jobs:
           # 获取Ubuntu 22.04 ARM镜像列表（先保存完整 JSON 以便调试）
           images_json=$(oci compute image list \
               --compartment-id "ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z" \
-              --operating-system "Canonical Ubuntu 22.04 Minimal aarch64" \
-              # --operating-system-version "22.04" \
-              # --architecture "ARM" \
+              --operating-system "Canonical Ubuntu" \
+              --operating-system-version "22.04" \
+              --architecture "ARM" \
               --query "data" \
               --raw-output)
 
