@@ -68,6 +68,17 @@
 - 为 OCI 用户分配最小必要权限
 - 启用 GitHub 仓库的分支保护和访问控制
 
+- GitHub Actions Workflow 触发方式说明
+- 您提到的这个提示是关于 GitHub Actions 的一个重要安全机制。让我用简单的语言解释：
+- 什么是 Fork 和 PR？
+- Fork：复制别人的仓库到您自己的 GitHub 账户下
+- PR (Pull Request)：从您的 fork 仓库向原仓库提交代码更改请求
+- 为什么会有这个限制？
+- 这是 GitHub 的安全保护机制：
+- 当您从 fork 仓库发起 PR 时，GitHub 默认不会将原仓库的 Secrets（敏感信息）传递给 fork 仓库的 workflow
+- 这样可以防止恶意代码通过 PR 获取原仓库的敏感数据（比如我们配置的 Oracle Cloud API 密钥）
+
+
 ---
 
 如需详细操作步骤或遇到问题，请参考 Oracle Cloud 官方文档或联系仓库维护者。

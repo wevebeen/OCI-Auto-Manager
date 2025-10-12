@@ -62,8 +62,7 @@ jobs:
           fi
 
           # 使用 printf 保留原始换行和内容（避免 echo 导致的不一致行为）
-          printf '%s
-'"${{ secrets.OCI_PRIVATE_KEY }}"+"\n' > ~/.oci/oci_api_key.pem
+          printf '%s'"${{ secrets.OCI_PRIVATE_KEY }}"+"\n' > ~/.oci/oci_api_key.pem
 
           # 按照 Oracle 建议追加 OCI_API_KEY 标识（如果尚未存在）
           if ! grep -q '^OCI_API_KEY$' ~/.oci/oci_api_key.pem 2>/dev/null; then
