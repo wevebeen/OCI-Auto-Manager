@@ -211,29 +211,27 @@ jobs:
             --raw-output)
           echo "使用可用性域：$ad"
           
-          # 获取Ubuntu 22.04 Minimal ARM镜像
-          image_id=$(oci compute image list \
+          # 获取Ubuntu 22.04 ARM镜像列表（先保存完整 JSON 以便调试）
+          images_json=$(oci compute image list \
               --compartment-id "$image_owner_ocid" \
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
               --architecture "ARM" \
               --all \
-              --query "data[?contains(display-name, 'Minimal')].id | [0]" \
+              --query "data" \
               --raw-output)
-              
-          echo "$images_json" | jq -r '.[] | "- \(.id)\t\(.name)"' || true
 
-          # 如果仍未找到 Minimal 版本，回退到第一个匹配的 Ubuntu 22.04 ARM 镜像
-          if [ -z "$image_id" ] || [ "$image_id" == "null" ]; then
-            echo "⚠️ 未找到 Minimal 版本，回退到任意 Ubuntu 22.04 ARM 镜像..."
-            image_id=$(oci compute image list \
-              --compartment-id "$image_owner_ocid" \
-              --operating-system "Canonical Ubuntu" \
-              --operating-system-version "22.04" \
-              --architecture "ARM" \
-              --all \
-              --query "data[0].id" \
-              --raw-output)
+          echo "=== 全部镜像（JSON） ==="
+          echo "$images_json" | jq '.' || true
+
+          echo "=== 简要镜像列表（id \t display-name） ==="
+          echo "$images_json" | jq -r '.[] | "- \(.id)\t\(.display-name // .displayName // .name)"' || true
+
+          # 优先选择包含 'Minimal' 的镜像，否则回退到第一个匹配的镜像
+          image_id=$(echo "$images_json" | jq -r '[.[] | select((.display-name // .displayName // .name) | test("Minimal"; "i")) | .id] | first // empty')
+          if [ -z "$image_id" ]; then
+            echo "⚠️ 未找到含 'Minimal' 的镜像，回退到第一个 Ubuntu 22.04 ARM 镜像..."
+            image_id=$(echo "$images_json" | jq -r '.[0].id')
           fi
           
           echo "使用镜像ID：$image_id"
