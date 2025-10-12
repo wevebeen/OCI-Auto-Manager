@@ -211,25 +211,43 @@ jobs:
             --raw-output)
           echo "使用可用性域：$ad"
           
-          # 获取Ubuntu 22.04 Minimal ARM镜像
-          echo "正在查找Ubuntu 22.04 Minimal ARM镜像..."
+          # 获取Ubuntu 22.04 Minimal ARM镜像（更健壮的查找逻辑）
+          echo "正在查找Ubuntu 22.04 Minimal ARM镜像（优先在租户内查找）..."
+
+          # 先在当前 tenancy 下搜索（有些环境会把共享镜像复制到租户）
           image_id=$(oci compute image list \
-            --compartment-id ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z \
+            --compartment-id "${{secrets.OCI_TENANCY}}" \
             --operating-system "Canonical Ubuntu" \
             --operating-system-version "22.04" \
             --architecture "ARM" \
-            --query "data[] | select(.['display-name'] | contains('Minimal')).id" \
-            --raw-output | head -n 1)
-          
-          # 如果找不到Minimal版本，使用标准版本
+            --all \
+            --query "data[?contains(display-name, 'Minimal')].id | [0]" \
+            --raw-output)
+
+          # 如果没有找到，再尝试 Canonical 的公共镜像租户（硬编码为公共镜像提供者 OCID）
           if [ -z "$image_id" ] || [ "$image_id" == "null" ]; then
-            echo "⚠️ 未找到Minimal版本，使用标准版本..."
+            echo "未在租户中找到 Minimal 镜像，尝试公共 Canonical 镜像租户..."
+            image_owner_ocid="ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z"
             image_id=$(oci compute image list \
-              --compartment-id ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z \
+              --compartment-id "$image_owner_ocid" \
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
               --architecture "ARM" \
-              --query 'data[0].id' \
+              --all \
+              --query "data[?contains(display-name, 'Minimal')].id | [0]" \
+              --raw-output)
+          fi
+
+          # 如果仍未找到 Minimal 版本，回退到第一个匹配的 Ubuntu 22.04 ARM 镜像
+          if [ -z "$image_id" ] || [ "$image_id" == "null" ]; then
+            echo "⚠️ 未找到 Minimal 版本，回退到任意 Ubuntu 22.04 ARM 镜像..."
+            image_id=$(oci compute image list \
+              --compartment-id "${image_owner_ocid:-${{secrets.OCI_TENANCY}}}" \
+              --operating-system "Canonical Ubuntu" \
+              --operating-system-version "22.04" \
+              --architecture "ARM" \
+              --all \
+              --query "data[0].id" \
               --raw-output)
           fi
           
