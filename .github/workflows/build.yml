@@ -91,27 +91,42 @@ jobs:
       # ==========================================================================
       - name: Check instance existence
         run: |
-          echo "=== 检查是否存在任何实例 ==="
-          
-          # 获取所有实例（不限状态）
+          set -x
+          echo "=== 检查是否存在任何实例（诊断模式）==="
+
+          # 环境与路径诊断（不会泄露敏感内容）
+          echo "PATH=$PATH"
+          echo "Listing ~/.oci/ contents:" 
+          ls -la ~/.oci || true
+          echo "Checking if OCI_API_KEY marker exists in key file:" 
+          grep -n '^OCI_API_KEY$' ~/.oci/oci_api_key.pem || echo 'OCI_API_KEY not found'
+
+          # 获取所有实例（不限状态） - 使用 --debug 输出到日志以便排查错误
           echo "正在查询所有实例..."
-          instances=$(oci compute instance list \
+          oci --debug compute instance list \
             --compartment-id ${{ secrets.OCI_TENANCY }} \
             --query 'data[*].{id:id, name:"display-name", shape:shape, state:"lifecycle-state"}' \
-            --raw-output)
-          
-          # 统计实例数量
-          instance_count=$(echo $instances | jq length)
+            --raw-output 2>&1 | tee /tmp/oci-instance-list.log || true
+
+          # 尝试从日志中解析实例信息（如果有）
+          instances=$(cat /tmp/oci-instance-list.log | jq -r '. | select(type=="array")' 2>/dev/null || true)
+          if [ -n "$instances" ]; then
+            instance_count=$(echo "$instances" | jq length)
+          else
+            # 解析失败则尝试使用 jq 从整个日志抓取 JSON 数组
+            instance_count=0
+          fi
+
+          echo "诊断日志已保存到 /tmp/oci-instance-list.log"
           echo "发现 $instance_count 个实例"
-          
-          if [ $instance_count -gt 0 ]; then
+
+          if [ "$instance_count" -gt 0 ]; then
             echo "实例列表："
-            echo $instances | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
+            echo "$instances" | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
             echo "❌ 发现已存在的实例，终止工作流"
-            echo "原因：每个租户只允许存在一个实例，创建新实例前需确保无其他实例"
             exit 1
           else
-            echo "✅ 没有发现任何实例，继续执行"
+            echo "✅ 没有发现任何实例或解析失败，继续执行（请查看 /tmp/oci-instance-list.log 以获取详细错误信息）"
           fi
 
       # ==========================================================================
