@@ -76,6 +76,10 @@ jobs:
           # 配置环境变量
           echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc
           source ~/.bashrc
+          # 将 $HOME/bin 写入 GITHUB_PATH，确保后续步骤可以直接使用 oci
+          echo "$HOME/bin" >> $GITHUB_PATH
+          # 立即把 $HOME/bin 加入当前 PATH，使得本步骤可以立刻使用 oci
+          export PATH="$HOME/bin:$PATH"
           
           # 验证安装
           oci --version
