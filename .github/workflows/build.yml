@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
-    
+
     steps:
       # ==========================================================================
       # 步骤1：检出代码仓库
@@ -61,7 +61,7 @@ jobs:
             echo "   - 如果这是来自 fork 的 PR 或非受信任触发，GitHub 可能不会注入 Secrets。"
             exit 1
           fi
-          
+
           echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
 
           # 设置文件权限（安全要求）
@@ -102,42 +102,37 @@ jobs:
       # ==========================================================================
       - name: Check instance existence
         run: |
-          set -x
-          echo "=== 检查是否存在任何实例（诊断模式）==="
+          echo "=== 检查是否存在任何实例 ==="
 
-          # 环境与路径诊断（不会泄露敏感内容）
-          echo "PATH=$PATH"
-          echo "Listing ~/.oci/ contents:" 
-          ls -la ~/.oci || true
-          echo "Checking if OCI_API_KEY marker exists in key file:" 
-          grep -n '^OCI_API_KEY$' ~/.oci/oci_api_key.pem || echo 'OCI_API_KEY not found'
-
-          # 获取所有实例（不限状态） - 使用 --debug 输出到日志以便排查错误
-          echo "正在查询所有实例..."
-          oci --debug compute instance list \
-          --compartment-id ${{ secrets.OCI_COMPARTMENT }} \
+          # 首先使用正常模式获取 JSON（便于解析）。如果失败，再以 --debug 模式打印详细信息帮助排查。
+          set +e
+          instances_json=$(oci compute instance list \
+            --compartment-id "${{secrets.OCI_COMPARTMENT}}" \
             --query 'data[*].{id:id, name:"display-name", shape:shape, state:"lifecycle-state"}' \
-            --raw-output 2>&1 | tee /tmp/oci-instance-list.log || true
+            --raw-output 2>/dev/null)
+          rc=$?
+          set -e
 
-          # 尝试从日志中解析实例信息（如果有）
-          instances=$(cat /tmp/oci-instance-list.log | jq -r '. | select(type=="array")' 2>/dev/null || true)
-          if [ -n "$instances" ]; then
-            instance_count=$(echo "$instances" | jq length)
-          else
-            # 解析失败则尝试使用 jq 从整个日志抓取 JSON 数组
-            instance_count=0
+          if [ $rc -ne 0 ]; then
+            echo "OCI CLI list failed; printing debug output to help troubleshooting"
+            oci --debug compute instance list \
+              --compartment-id "${{secrets.OCI_COMPARTMENT}}" \
+              --query 'data[*].{id:id, name:"display-name", shape:shape, state:"lifecycle-state"}' \
+              --raw-output || true
+            echo "检查建议：确认仓库 Secrets 中的 OCI_COMPARTMENT/OCI_USER/OCI_FINGERPRINT/OCI_REGION/OCI_PRIVATE_KEY 是否为正确值，且所用用户有 list instances 的权限。"
+            exit 1
           fi
 
-          echo "诊断日志已保存到 /tmp/oci-instance-list.log"
+          # 解析实例数量并在存在实例时终止工作流
+          instance_count=$(echo "$instances_json" | jq length)
           echo "发现 $instance_count 个实例"
-
           if [ "$instance_count" -gt 0 ]; then
             echo "实例列表："
-            echo "$instances" | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
+            echo "$instances_json" | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
             echo "❌ 发现已存在的实例，终止工作流"
             exit 1
           else
-            echo "✅ 没有发现任何实例或解析失败，继续执行（请查看 /tmp/oci-instance-list.log 以获取详细错误信息）"
+            echo "✅ 没有发现任何实例，继续执行"
           fi
 
       # ==========================================================================
@@ -157,10 +152,10 @@ jobs:
           echo "- 网络配置：分配公网IP"
           echo "- 符合Oracle Cloud始终免费条件"
           
-          # 获取可用性域
+          # 获取可用性域（使用 tenancy OCID）
           echo "正在获取可用性域..."
           ad=$(oci iam availability-domain list \
-            --compartment-id ${{ secrets.OCI_COMPARTMENT }} \
+            --compartment-id ${{secrets.OCI_TENANCY}} \
             --query 'data[0]."name"' \
             --raw-output)
           echo "使用可用性域：$ad"
@@ -192,11 +187,11 @@ jobs:
           # 获取网络配置
           echo "正在获取网络配置..."
           vcn_id=$(oci network vcn list \
-            --compartment-id ${{ secrets.OCI_COMPARTMENT }} \
+            --compartment-id ${{secrets.OCI_COMPARTMENT}} \
             --query 'data[0]."id"' \
             --raw-output)
           subnet_id=$(oci network subnet list \
-            --compartment-id ${{ secrets.OCI_COMPARTMENT }} \
+            --compartment-id ${{secrets.OCI_COMPARTMENT}} \
             --vcn-id $vcn_id \
             --query 'data[0]."id"' \
             --raw-output)
@@ -206,15 +201,20 @@ jobs:
           
           # 启动实例
           echo "正在启动实例，请稍候..."
+          if [ -z "${{secrets.SSH_PUBLIC_KEY}}" ]; then
+            echo "❌ SSH_PUBLIC_KEY is empty. Please provide SSH public key as workflow input."
+            exit 1
+          fi
+
           instance_response=$(oci compute instance launch \
             --availability-domain "$ad" \
-            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --compartment-id "${{secrets.OCI_COMPARTMENT}}" \
             --shape "VM.Standard.A1.Flex" \
             --shape-config '{"ocpus": 4, "memoryInGBs": 24}' \
             --display-name "$instance_name" \
             --image-id "$image_id" \
             --subnet-id "$subnet_id" \
-            --ssh-authorized-keys-file <(echo "${{ secrets.SSH_PUBLIC_KEY }}") \
+            --ssh-authorized-keys-file <(echo "${{secrets.SSH_PUBLIC_KEY}}") \
             --assign-public-ip true \
             --query 'data' \
             --raw-output)
