@@ -57,6 +57,7 @@ jobs:
           # 保存API私钥（更健壮的写法）
           if [ -z "${{ secrets.OCI_PRIVATE_KEY }}" ]; then
             echo "❌ OCI_PRIVATE_KEY secret is empty or not available in this workflow run."
+            echo "   - 参数不存在"
             echo "   - 如果这是来自 fork 的 PR 或非受信任触发，GitHub 可能不会注入 Secrets。"
             exit 1
           fi
