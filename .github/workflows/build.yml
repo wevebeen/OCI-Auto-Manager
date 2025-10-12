@@ -215,10 +215,9 @@ jobs:
           echo "正在列出镜像（OCI CLI 调用）..."
           set +e
           images_json=$(oci compute image list \
-              --compartment-id "ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z" \
+              --compartment-id "${{secrets.OCI_TENANCY}}" \
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
-              --architecture "ARM" \
               --all \
               --query "data" \
               --raw-output 2>/dev/null)
@@ -228,10 +227,9 @@ jobs:
           if [ $rc -ne 0 ]; then
             echo "❌ oci compute image list 调用失败 (exit code=$rc)。输出 --debug 以帮助排查："
             oci --debug compute image list \
-              --compartment-id "ocid1.tenancy.oc1..aaaaaaaabzpl7252xqzlgw3g2vbmixf62c7nrg4n772a6q2t4v5a3b7c8d9e0f1g2h3i4j5k6l7m8n9o0p1q2r3s4t5u6v7w8x9y0z" \
+              --compartment-id "${{secrets.OCI_TENANCY}}" \
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
-              --architecture "ARM" \
               --all \
               --query "data" \
               --raw-output || true
