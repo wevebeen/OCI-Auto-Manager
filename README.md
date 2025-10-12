@@ -43,7 +43,6 @@
 | **OCI_PRIVATE_KEY** | API认证私钥（PEM格式，未加密）<br>使用 openssl 生成         | `-----BEGIN RSA PRIVATE KEY----- ...` |
 | **OCI_REGION**    | 区域标识符<br>推荐：us-ashburn-1, ap-seoul-1, eu-frankfurt-1 | `us-ashburn-1` |
 | **SSH_PUBLIC_KEY** | 用于 SSH 登录的公钥<br>使用 ssh-keygen 生成                 | `ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAAB...` |
-| **OCI_COMPARTMENT** | 要操作的 Compartment OCID（用于 --compartment-id 参数）<br>控制台 → Identity → Compartments | `ocid1.compartment.oc1..aaaa...` |
 
 > 获取方式可参考 Oracle Cloud 控制台相关页面。
 
@@ -57,7 +56,6 @@
 - 租户（Tenancy OCID）：https://cloud.oracle.com/tenancy
 - API 密钥与指纹（Fingerprint / Private Key）：https://cloud.oracle.com/identity/domains/my-profile/auth-tokens
 - 区域列表（Regions）：https://cloud.oracle.com/regions
-- 区域(Compartment OCID):https://cloud.oracle.com/identity/domains/
 
 提示：控制台页面可能需要先登录 Oracle Cloud 帐户。
 

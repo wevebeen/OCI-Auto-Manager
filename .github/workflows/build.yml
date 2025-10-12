@@ -114,7 +114,7 @@ jobs:
 
           # 检查 compartment 是否存在并返回详情（这是目前失败的调用）
           echo "=== oci iam compartment get ==="
-          oci iam compartment get --compartment-id "${{secrets.OCI_COMPARTMENT}}" --raw-output || echo "compartment get failed (可能是 OCID 错/无权限)"
+          oci iam compartment get --compartment-id "${{secrets.OCI_TENANCY}}" --raw-output || echo "compartment get failed (可能是 OCID 错/无权限)"
 
           # 在 tenancy 下列出所有 compartments（用来在列表中确认你使用的 OCID）
           echo "=== list compartments under tenancy ==="
@@ -130,7 +130,7 @@ jobs:
 
           # 作为最终测试，尝试对目标 compartment 列出 compute 实例（这一步如果权限缺会报 NotAuthorizedOrNotFound）
           echo "=== compute instance list (test) ==="
-          oci compute instance list --compartment-id "${{secrets.OCI_COMPARTMENT}}" --all --output table || echo "compute list failed"
+          oci compute instance list --compartment-id "${{secrets.OCI_TENANCY}}" --all --output table || echo "compute list failed"
 
           echo "✅ 预检通过：OCI 配置看起来正常"
 
@@ -140,12 +140,12 @@ jobs:
       # ==========================================================================
       - name: Check instance existence
         run: |
-          echo "=== 检查是否存在任何实例 ==="
+          echo "=== 检查是否存在任何实例（TERMINATED 可忽略） ==="
 
-          # 首先使用正常模式获取 JSON（便于解析）。如果失败，再以 --debug 模式打印详细信息帮助排查。
+          # 容错执行 list 调用以便在失败时输出 debug 帮助排查
           set +e
           instances_json=$(oci compute instance list \
-            --compartment-id "${{secrets.OCI_COMPARTMENT}}" \
+            --compartment-id "${{secrets.OCI_TENANCY}}" \
             --query 'data[*].{id:id, name:"display-name", shape:shape, state:"lifecycle-state"}' \
             --raw-output 2>/dev/null)
           rc=$?
@@ -154,23 +154,36 @@ jobs:
           if [ $rc -ne 0 ]; then
             echo "OCI CLI list failed; printing debug output to help troubleshooting"
             oci --debug compute instance list \
-              --compartment-id "${{secrets.OCI_COMPARTMENT}}" \
+              --compartment-id "${{secrets.OCI_TENANCY}}" \
               --query 'data[*].{id:id, name:"display-name", shape:shape, state:"lifecycle-state"}' \
               --raw-output || true
-            echo "检查建议：确认仓库 Secrets 中的 OCI_COMPARTMENT/OCI_USER/OCI_FINGERPRINT/OCI_REGION/OCI_PRIVATE_KEY 是否为正确值，且所用用户有 list instances 的权限。"
+            echo "检查建议：确认仓库 Secrets 中的 OCI_TENANCY/OCI_USER/OCI_FINGERPRINT/OCI_REGION/OCI_PRIVATE_KEY 是否为正确值，且所用用户有 list instances 的权限。"
             exit 1
           fi
 
-          # 解析实例数量并在存在实例时终止工作流
-          instance_count=$(echo "$instances_json" | jq length)
-          echo "发现 $instance_count 个实例"
-          if [ "$instance_count" -gt 0 ]; then
-            echo "实例列表："
-            echo "$instances_json" | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
-            echo "❌ 发现已存在的实例，终止工作流"
+          # 处理可能的 null 返回，确保为数组
+          instances_json=${instances_json:-[]}
+
+          # 过滤掉 lifecycle-state 为 TERMINATED 的实例，统计剩余（非 TERMINATED）数量
+          non_terminated_json=$(echo "$instances_json" | jq '[.[] | select(.state != "TERMINATED")]')
+          non_terminated_count=$(echo "$non_terminated_json" | jq 'length')
+          total_count=$(echo "$instances_json" | jq 'length')
+
+          echo "总共发现 $total_count 个实例；其中非 TERMINATED 的数量：$non_terminated_count"
+
+          if [ "$non_terminated_count" -gt 0 ]; then
+            echo "存在非 TERMINATED 的实例，列出并终止工作流："
+            echo "$non_terminated_json" | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
+            echo "❌ 发现正在运行/非终止状态的实例，终止工作流"
             exit 1
           else
-            echo "✅ 没有发现任何实例，继续执行"
+            if [ "$total_count" -gt 0 ]; then
+              echo "发现的实例均为 TERMINATED（可继续创建新实例）："
+              echo "$instances_json" | jq -r '.[] | "- 名称：\(.name) | 类型：\(.shape) | 状态：\(.state) | ID：\(.id)"'
+            else
+              echo "未发现任何实例，继续执行"
+            fi
+            echo "✅ 继续执行后续步骤"
           fi
 
       # ==========================================================================
@@ -225,11 +238,11 @@ jobs:
           # 获取网络配置
           echo "正在获取网络配置..."
           vcn_id=$(oci network vcn list \
-            --compartment-id ${{secrets.OCI_COMPARTMENT}} \
+            --compartment-id ${{secrets.OCI_TENANCY}} \
             --query 'data[0]."id"' \
             --raw-output)
           subnet_id=$(oci network subnet list \
-            --compartment-id ${{secrets.OCI_COMPARTMENT}} \
+            --compartment-id ${{secrets.OCI_TENANCY}} \
             --vcn-id $vcn_id \
             --query 'data[0]."id"' \
             --raw-output)
@@ -246,7 +259,7 @@ jobs:
 
           instance_response=$(oci compute instance launch \
             --availability-domain "$ad" \
-            --compartment-id "${{secrets.OCI_COMPARTMENT}}" \
+            --compartment-id "${{secrets.OCI_TENANCY}}" \
             --shape "VM.Standard.A1.Flex" \
             --shape-config '{"ocpus": 4, "memoryInGBs": 24}' \
             --display-name "$instance_name" \
