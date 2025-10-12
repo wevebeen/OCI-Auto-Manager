@@ -61,6 +61,8 @@ jobs:
             echo "   - 如果这是来自 fork 的 PR 或非受信任触发，GitHub 可能不会注入 Secrets。"
             exit 1
           fi
+          
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
 
           # 设置文件权限（安全要求）
           chmod 600 ~/.oci/config
