@@ -63,7 +63,8 @@
 
 ## 手动测试
 > 在Oracle Cloud 控制台-右上角开发人员工具-Cloud Shell
-> 示例:把中文替换相关参数
+
+示例:把中文替换相关参数
 ```
 oci compute instance launch \
 	--availability-domain "可用性域" \
