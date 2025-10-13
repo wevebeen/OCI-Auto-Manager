@@ -220,7 +220,7 @@ jobs:
               --operating-system-version "22.04" \
               --all \
               --query "data[0].id" \
-              --raw-output 2>/dev/null)
+              --raw-output)
           rc=$?
           set -e
 
