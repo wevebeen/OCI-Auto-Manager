@@ -260,6 +260,7 @@ jobs:
             --query 'data' \
             --raw-output)
           
+          echo "解析实例信息"
           # 解析实例信息
           instance_id=$(echo "$instance_response" | jq -r '.id')
           lifecycle_state=$(echo "$instance_response" | jq -r '["lifecycle-state"]')
