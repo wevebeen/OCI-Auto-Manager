@@ -219,7 +219,7 @@ jobs:
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
               --all \
-              --query "data" \
+              --query "data[0].id" \
               --raw-output 2>/dev/null)
           rc=$?
           set -e
@@ -235,26 +235,6 @@ jobs:
               --raw-output || true
             echo "建议：检查 Secrets 中的 OCI_TENANCY/OCI_USER/OCI_FINGERPRINT/OCI_REGION/OCI_PRIVATE_KEY 是否正确，或确认所用用户对该 compartment 有列出镜像的权限。"
             exit $rc
-          fi
-
-          # 保护性处理：确保 images_json 是一个 JSON 数组（避免空值导致 jq 失败）
-          images_json=${images_json:-[]}
-
-          echo "=== 全部镜像（JSON） ==="
-          echo "$images_json" | jq '.' || true
-
-          echo "=== 简要镜像列表（id \t display-name） ==="
-          echo "$images_json" | jq -r '.[] | "- \(.id)\t\(.display-name // .displayName // .name)"' || true
-
-          # 优先选择包含 'Minimal' 的镜像，否则回退到第一个匹配的镜像
-          image_id=$(echo "$images_json" | jq -r '[.[] | select((.display-name // .displayName // .name) | test("Minimal"; "i")) | .id] | first // empty')
-          if [ -z "$image_id" ] || [ "$image_id" = "null" ]; then
-            echo "⚠️ 未找到含 'Minimal' 的镜像，回退到第一个 Ubuntu 22.04 ARM 镜像（如果存在）..."
-            image_id=$(echo "$images_json" | jq -r '.[0].id // empty')
-          fi
-          if [ -z "$image_id" ]; then
-            echo "❌ 未能找到任何可用的 Ubuntu 22.04 ARM 镜像，无法继续创建实例。"
-            exit 1
           fi
           
           echo "使用镜像ID：$image_id"
