@@ -62,7 +62,7 @@
 ---
 
 ## 手动测试
-> 在Oracle Cloud 控制台-右上角开发人员工具-Cloud Shell
+> 在Oracle Cloud 控制台-实例-右上角开发人员工具-Cloud Shell
 
 示例:把中文替换相关参数
 ```
