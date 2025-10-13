@@ -213,29 +213,13 @@ jobs:
           
           # 获取Ubuntu 22.04 ARM镜像列表（先保存完整 JSON 以便调试）
           echo "正在列出镜像（OCI CLI 调用）..."
-          set +e
-          images_json=$(oci compute image list \
+          image_id=$(oci compute image list \
               --compartment-id "${{secrets.OCI_TENANCY}}" \
               --operating-system "Canonical Ubuntu" \
               --operating-system-version "22.04" \
               --all \
               --query "data[0].id" \
               --raw-output)
-          rc=$?
-          set -e
-
-          if [ $rc -ne 0 ]; then
-            echo "❌ oci compute image list 调用失败 (exit code=$rc)。输出 --debug 以帮助排查："
-            oci --debug compute image list \
-              --compartment-id "${{secrets.OCI_TENANCY}}" \
-              --operating-system "Canonical Ubuntu" \
-              --operating-system-version "22.04" \
-              --all \
-              --query "data" \
-              --raw-output || true
-            echo "建议：检查 Secrets 中的 OCI_TENANCY/OCI_USER/OCI_FINGERPRINT/OCI_REGION/OCI_PRIVATE_KEY 是否正确，或确认所用用户对该 compartment 有列出镜像的权限。"
-            exit $rc
-          fi
           
           echo "使用镜像ID：$image_id"
           
