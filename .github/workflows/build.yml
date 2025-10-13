@@ -234,9 +234,11 @@ jobs:
             --vcn-id $vcn_id \
             --query 'data[0]."id"' \
             --raw-output)
+          echo "网络配置ID：$subnet_id"
           
           # 生成唯一实例名称
           instance_name="ubuntu-arm-4c24g-$(date +%Y%m%d-%H%M%S)"
+          echo "实例名称：$instance_name"
           
           # 启动实例
           echo "正在启动实例，请稍候..."
