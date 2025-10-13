@@ -257,6 +257,8 @@ jobs:
             --subnet-id "$subnet_id" \
             --ssh-authorized-keys-file <(echo "${{secrets.SSH_PUBLIC_KEY}}") \
             --assign-public-ip true \
+            --connection-timeout 30 \
+            --read-timeout 600
             --query 'data' \
             --raw-output)
           

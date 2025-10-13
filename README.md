@@ -59,6 +59,26 @@
 
 提示：控制台页面可能需要先登录 Oracle Cloud 帐户。
 
+---
+
+## 手动测试
+> 在Oracle Cloud 控制台-右上角开发人员工具-Cloud Shell
+示例:把中文替换相关参数
+```
+oci compute instance launch \
+	--availability-domain "可用性域" \
+	--compartment-id "租户唯一标识符" \
+	--shape "VM.Standard.A1.Flex" \
+	--shape-config '{"ocpus": 4, "memoryInGBs": 24}' \
+	--display-name "ubuntu-arm-4c24g-20251013-061336" \
+	--image-id "镜像ID" \
+	--subnet-id "网络配置ID" \
+	--ssh-authorized-keys-file <(echo "SSH 登录的公钥") \
+	--assign-public-ip true \
+	--query 'data' \
+	--raw-output
+```
+
 ## 安全注意事项
 
 - 所有 Secrets 都应严格保密，不要在代码中硬编码
@@ -66,8 +86,7 @@
 - 为 OCI 用户分配最小必要权限
 - 启用 GitHub 仓库的分支保护和访问控制
 
-- GitHub Actions Workflow 触发方式说明
-- 您提到的这个提示是关于 GitHub Actions 的一个重要安全机制。让我用简单的语言解释：
+- * GitHub Actions Workflow 触发方式说明
 - 什么是 Fork 和 PR？
 - Fork：复制别人的仓库到您自己的 GitHub 账户下
 - PR (Pull Request)：从您的 fork 仓库向原仓库提交代码更改请求
