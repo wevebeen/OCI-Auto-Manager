@@ -87,7 +87,7 @@ oci compute instance launch \
 - 为 OCI 用户分配最小必要权限
 - 启用 GitHub 仓库的分支保护和访问控制
 
-- * GitHub Actions Workflow 触发方式说明
+* GitHub Actions Workflow 触发方式说明
 - 什么是 Fork 和 PR？
 - Fork：复制别人的仓库到您自己的 GitHub 账户下
 - PR (Pull Request)：从您的 fork 仓库向原仓库提交代码更改请求
