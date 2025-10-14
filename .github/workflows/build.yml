@@ -389,8 +389,20 @@ jobs:
       # 步骤7：有条件地发送邮件（仅当 should_send == 'true'）
       # 需要在仓库 Secrets 中配置：SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, EMAIL_TO
       # 我使用 dawidd6/action-send-mail@v3 作为示例（可替换为其他邮件 action）
+      - name: Check SMTP config
+        id: smtp_check
+        run: |
+          echo "Checking SMTP configuration..."
+          if [ -z "${{ secrets.SMTP_SERVER }}" ]; then
+            echo "smtp_configured=false" >> $GITHUB_OUTPUT
+            echo "SMTP_SERVER not set"
+          else
+            echo "smtp_configured=true" >> $GITHUB_OUTPUT
+            echo "SMTP_SERVER is set"
+          fi
+
       - name: Send email if message changed
-        if: ${{ steps.decide.outputs.should_send == 'true' && secrets.SMTP_SERVER != '' }}
+        if: ${{ steps.decide.outputs.should_send == 'true' && steps.smtp_check.outputs.smtp_configured == 'true' }}
         uses: dawidd6/action-send-mail@v3
         with:
           server_address: ${{ secrets.SMTP_SERVER }}
@@ -407,9 +419,9 @@ jobs:
             <p><strong>Returned message:</strong> ${{ steps.decide.outputs.response_message }}</p>
             <p>Compare against <code>message.json</code> in the repository.</p>
 
-      # 如果应该发送但未配置 SMTP_SERVER，写日志并跳过发送
-      - name: Skip sending email when SMTP not configured
-        if: ${{ steps.decide.outputs.should_send == 'true' && secrets.SMTP_SERVER == '' }}
+      # 如果应该发送但未配置 SMTP_SERVER，写日志并跳过发送（由 smtp_check 步骤判断）
+      - name: Log skipped email when SMTP not configured
+        if: ${{ steps.decide.outputs.should_send == 'true' && steps.smtp_check.outputs.smtp_configured == 'false' }}
         run: |
           echo "should_send == true but SMTP_SERVER secret is not set; skipping email send."
 
