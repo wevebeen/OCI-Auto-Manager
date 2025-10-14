@@ -240,12 +240,17 @@ jobs:
           instance_name="ubuntu-arm-4c24g-$(date +%Y%m%d-%H%M%S)"
           echo "实例名称：$instance_name"
           
-          # 启动实例
+          # 启动实例（捕获可能的错误，不让步骤直接失败，以便后续判断并根据 message 决定是否发送邮件）
           echo "正在启动实例，请稍候..."
           if [ -z "${{secrets.SSH_PUBLIC_KEY}}" ]; then
             echo "❌ SSH_PUBLIC_KEY is empty. Please provide SSH public key as workflow input."
             exit 1
           fi
+
+          # 允许命令失败并把 stderr 保存到文件，以便提取错误 message
+          set +e
+          # 先清理旧文件
+          rm -f oci_err.json response.json || true
 
           instance_response=$(oci compute instance launch \
             --availability-domain "$ad" \
@@ -258,20 +263,48 @@ jobs:
             --ssh-authorized-keys-file <(echo "${{secrets.SSH_PUBLIC_KEY}}") \
             --assign-public-ip true \
             --connection-timeout 30 \
-            --read-timeout 600
+            --read-timeout 600 \
             --query 'data' \
-            --raw-output)
-          
-          echo "解析实例信息"
-          # 解析实例信息
-          instance_id=$(echo "$instance_response" | jq -r '.id')
-          lifecycle_state=$(echo "$instance_response" | jq -r '["lifecycle-state"]')
-          private_ip=$(echo "$instance_response" | jq -r '.primary_vnic["private-ip"]')
-          
-          echo "✅ 实例创建成功！"
-          echo "- 实例ID：$instance_id"
-          echo "- 当前状态：$lifecycle_state"
-          echo "- 私有IP：$private_ip"
+            --raw-output 2>oci_err.json)
+          rc=$?
+          set -e
+
+          if [ $rc -ne 0 ]; then
+            echo "OCI CLI returned non-zero exit code: $rc"
+            echo "--- raw stderr (saved to oci_err.json) ---"
+            sed -n '1,200p' oci_err.json || true
+
+            # 尝试从 stderr 中提取 JSON 部分并解析 message 字段
+            err_json=$(awk 'BEGIN{p=0} { if(p==1) print; else if(match($0,/\{/)){print substr($0, RSTART); p=1} }' oci_err.json || true)
+            if [ -n "$err_json" ]; then
+              msg=$(echo "$err_json" | jq -r '.message // empty' || true)
+            else
+              # 如果没有 JSON，尝试直接从 stderr 中抽取简单的 message 行
+              msg=$(grep -oE '"message":\s*"[^"]+"' oci_err.json | sed -E 's/"message":\s*"(.*)"/\1/' | head -n1 || true)
+            fi
+
+            msg=${msg:-"(unknown oci error)"}
+
+            # 写入 response.json 以供后续步骤读取，并导出到环境变量
+            echo "{ \"message\": \"$msg\" }" > response.json
+            echo "RESPONSE_MESSAGE=$msg" >> $GITHUB_ENV
+
+            echo "Captured error message: $msg"
+          else
+            echo "实例启动命令返回成功，解析实例信息"
+            instance_id=$(echo "$instance_response" | jq -r '.id' || true)
+            lifecycle_state=$(echo "$instance_response" | jq -r '."lifecycle-state"' || true)
+            private_ip=$(echo "$instance_response" | jq -r '.primary_vnic["private-ip"]' || true)
+
+            echo "✅ 实例创建成功！"
+            echo "- 实例ID：$instance_id"
+            echo "- 当前状态：$lifecycle_state"
+            echo "- 私有IP：$private_ip"
+
+            # 同样写入 response.json，保持统一格式
+            echo "{ \"message\": "$(printf '%s' "${lifecycle_state:-"SUCCEEDED"}" | jq -R .)" }" > response.json || true
+            echo "RESPONSE_MESSAGE=${lifecycle_state:-SUCCEEDED}" >> $GITHUB_ENV || true
+          fi
           
           # 等待实例完全启动
           echo "等待实例完全启动（最多等待5分钟）..."
@@ -295,12 +328,88 @@ jobs:
           echo "- SSH连接命令：ssh ubuntu@$public_ip"
           echo "- 注意：首次连接可能需要等待几分钟"
 
-      # # ==========================================================================
-      # # 步骤6：上传实例信息
-      # # ==========================================================================
-      # - name: Upload instance information
-      #   uses: actions/upload-artifact@v4
-      #   with:
-      #     name: ubuntu-arm-instance-details
-      #     path: instance_details.json
-      #     retention-days: 7
+      # ==========================================================================
+      # 步骤6：决定是否发送邮件（仅当返回 message 与 repository 根目录的 message.json 不同时）
+      # 逻辑说明：
+      # - 优先使用环境变量 RESPONSE_MESSAGE（可由前面的步骤通过 "echo "::set-output name=response::${MSG}"" 或者写入 response.json 并设置到 env 中）
+      # - 如果 RESPONSE_MESSAGE 为空，则尝试读取 workspace 根目录的 response.json 中的 message 字段
+      # - 将其与仓库中的 message.json 的 message 数组进行比较；如果不包含则标记 should_send=true
+      # 注意：GitHub Actions 在未来会移除 set-output 的旧语法，下面使用的是 step outputs 通过 echo "::set-output" 保持兼容性并同时导出到 GITHUB_OUTPUT
+      - name: Decide whether to send email
+        id: decide
+        run: |
+          echo "=== Decide whether to send email ==="
+          set -e
+
+          # 读取仓库内的 message.json 中的 message 数组（期望为 JSON 数组）
+          if [ ! -f message.json ]; then
+            echo "message.json not found in repository root"
+            echo "should_send=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          repo_messages=$(jq -c '.message' message.json)
+          echo "repo_messages=$repo_messages"
+
+          # 优先从环境变量读取 RESPONSE_MESSAGE
+          response_message="${{ env.RESPONSE_MESSAGE }}"
+
+          # 如果环境变量未提供，再尝试读取 response.json（如果存在）
+          if [ -z "$response_message" ] && [ -f response.json ]; then
+            # 尝试从 response.json 中提取 message（允许为字符串或对象）
+            response_message=$(jq -r '.message // empty' response.json || true)
+          fi
+
+          # 如果仍为空，尝试从步骤输出或临时文件中读取（保留弹性）
+          if [ -z "$response_message" ]; then
+            echo "No RESPONSE_MESSAGE or response.json message found; will not send email"
+            echo "should_send=false" >> $GITHUB_OUTPUT
+            echo "response_message=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "response_message=$response_message"
+
+          # 判断 response_message 是否在 repo_messages 数组中
+          # 使用 jq 来检查包含关系；如果 repo_messages 是数组，检查任何元素等于 response_message
+          contains=$(echo "$repo_messages" | jq --arg rm "$response_message" 'index($rm) != null')
+
+          if [ "$contains" = "true" ]; then
+            echo "response_message found in message.json; will send email"
+            echo "should_send=true" >> $GITHUB_OUTPUT
+          else
+            echo "response_message not found in message.json; skip sending email"
+            echo "should_send=false" >> $GITHUB_OUTPUT
+          fi
+
+          # 导出原始消息以便邮件步骤使用
+          echo "response_message=$response_message" >> $GITHUB_OUTPUT
+
+      # ==========================================================================
+      # 步骤7：有条件地发送邮件（仅当 should_send == 'true'）
+      # 需要在仓库 Secrets 中配置：SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, EMAIL_TO
+      # 我使用 dawidd6/action-send-mail@v3 作为示例（可替换为其他邮件 action）
+      - name: Send email if message changed
+        if: ${{ steps.decide.outputs.should_send == 'true' && secrets.SMTP_SERVER != '' }}
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: "[OCI Auto-Manager] Message changed in workflow run"
+          to: ${{ secrets.EMAIL_TO }}
+          from: ${{ secrets.SMTP_USERNAME }}
+          content_type: text/html
+          body: |
+            <p>The workflow detected a matching message in the latest run.</p>
+            <p><strong>Run ID:</strong> ${{ github.run_id }}</p>
+            <p><strong>Returned message:</strong> ${{ steps.decide.outputs.response_message }}</p>
+            <p>Compare against <code>message.json</code> in the repository.</p>
+
+      # 如果应该发送但未配置 SMTP_SERVER，写日志并跳过发送
+      - name: Skip sending email when SMTP not configured
+        if: ${{ steps.decide.outputs.should_send == 'true' && secrets.SMTP_SERVER == '' }}
+        run: |
+          echo "should_send == true but SMTP_SERVER secret is not set; skipping email send."
+

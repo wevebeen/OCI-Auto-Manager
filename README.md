@@ -13,6 +13,22 @@
 
 ### 触发条件
 - **自动触发**：每小时整点执行一次
+````markdown
+
+# OCI ARM 实例自动管理脚本
+
+## 功能简介
+- 每小时自动检查租户是否存在实例
+- 若无实例则自动创建新的 Ubuntu ARM 实例（4C24G）
+- 操作系统：Canonical Ubuntu 22.04 Minimal aarch64
+- 实例类型：VM.Standard.A1.Flex（Oracle Cloud 始终免费）
+
+---
+
+## 工作流程说明
+
+### 触发条件
+- **自动触发**：每小时整点执行一次
 - **手动触发**：可通过 GitHub Actions 界面手动启动
 
 ### 执行逻辑
@@ -80,6 +96,24 @@ oci compute instance launch \
 	--raw-output
 ```
 
+## 邮件通知与 Secrets 配置（新增功能说明）
+
+本仓库的 GitHub Actions 工作流在尝试创建实例时，会捕获创建实例的返回的错误/消息并与仓库根目录的 `message.json` 中配置的字符串进行匹配。
+
+只有在以下两个条件同时满足时，工作流才会发送邮件通知：
+
+- 捕获到的 `message` 与 `message.json` 中的任意一项完全相同（字符串相等）。
+- 仓库已配置 SMTP 相关 Secrets（见下）。
+
+必须在仓库的 Settings → Secrets 中配置以下 Secrets（示例）：
+
+- `SMTP_SERVER`：SMTP 地址（例如 smtp.example.com）
+- `SMTP_PORT`：端口号（例如 587）
+- `SMTP_USERNAME`：SMTP 用户名（通常为发件邮箱）
+- `SMTP_PASSWORD`：SMTP 密码或应用专用密码
+- `EMAIL_TO`：邮件接收地址（可用逗号分隔多个）
+
+
 ## 安全注意事项
 
 - 所有 Secrets 都应严格保密，不要在代码中硬编码
@@ -100,3 +134,4 @@ oci compute instance launch \
 ---
 
 如需详细操作步骤或遇到问题，请参考 Oracle Cloud 官方文档或联系仓库维护者。
+```
