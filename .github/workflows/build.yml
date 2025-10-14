@@ -424,7 +424,6 @@ jobs:
           subject: "[OCI Auto-Manager] Message changed in workflow run"
           to: ${{ secrets.EMAIL_TO }}
           from: ${{ secrets.SMTP_USERNAME }}
-          content_type: text/html
           body: |
             <p>The workflow detected a matching message in the latest run.</p>
             <p><strong>Run ID:</strong> ${{ github.run_id }}</p>
