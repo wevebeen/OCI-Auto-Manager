@@ -370,19 +370,24 @@ jobs:
 
           echo "response_message=$response_message"
 
+          # 规范化：去除首尾空白，避免比较时被多余空格或换行影响
+          response_message=$(printf '%s' "$response_message" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+          echo "normalized response_message=$response_message"
+
           # 判断 response_message 是否在 repo_messages 数组中
           # 使用 jq 来检查包含关系；如果 repo_messages 是数组，检查任何元素等于 response_message
           contains=$(echo "$repo_messages" | jq --arg rm "$response_message" 'index($rm) != null')
 
+          # 逻辑：当 response_message 与 message.json 中任一项不相同时，才发送邮件（即 mismatch -> send）
           if [ "$contains" = "true" ]; then
-            echo "response_message found in message.json; will send email"
-            echo "should_send=true" >> $GITHUB_OUTPUT
-          else
-            echo "response_message not found in message.json; skip sending email"
+            echo "response_message found in message.json; match -> skip sending email"
             echo "should_send=false" >> $GITHUB_OUTPUT
+          else
+            echo "response_message not found in message.json; mismatch -> will send email"
+            echo "should_send=true" >> $GITHUB_OUTPUT
           fi
 
-          # 导出原始消息以便邮件步骤使用
+          # 导出原始（规范化后）消息以便邮件步骤使用
           echo "response_message=$response_message" >> $GITHUB_OUTPUT
 
       # ==========================================================================

@@ -96,7 +96,7 @@ oci compute instance launch \
 
 只有在以下两个条件同时满足时，工作流才会发送邮件通知：
 
-- 捕获到的 `message` 与 `message.json` 中的任意一项完全相同（字符串相等）。
+- 捕获到的 `message` 与 `message.json` 中的任意一项完全不相同（字符串不相等）。
 - 仓库已配置 SMTP 相关 Secrets（见下）。
 
 必须在仓库的 Settings → Secrets 中配置以下 Secrets（示例）：
