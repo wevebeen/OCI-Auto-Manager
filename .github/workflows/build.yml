@@ -269,6 +269,15 @@ jobs:
           rc=$?
           set -e
 
+          echo "=== oci_err.json ==="
+          if [ -s oci_err.json ]; then
+            echo "----- begin oci_err.json -----"
+            cat oci_err.json || true
+            echo "----- end oci_err.json -----"
+          else
+            echo "oci_err.json is empty or not present"
+          fi
+               
           if [ $rc -ne 0 ]; then
             echo "OCI CLI returned non-zero exit code: $rc"
             echo "--- raw stderr (saved to oci_err.json) ---"
@@ -421,8 +430,9 @@ jobs:
           body: |
             <p>The workflow detected a matching message in the latest run.</p>
             <p><strong>Run ID:</strong> ${{ github.run_id }}</p>
+            <p><strong>Github id:</strong> $GITHUB_RUN_ID</p>
+            <p><strong>Github number:</strong> $GITHUB_RUN_NUMBER</p>
             <p><strong>Returned message:</strong> ${{ steps.decide.outputs.response_message }}</p>
-            <p>Compare against <code>message.json</code> in the repository.</p>
 
       # 如果应该发送但未配置 SMTP_SERVER，写日志并跳过发送（由 smtp_check 步骤判断）
       - name: Log skipped email when SMTP not configured
