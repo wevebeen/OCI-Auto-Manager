@@ -427,8 +427,7 @@ jobs:
           body: |
             <p>The workflow detected a matching message in the latest run.</p>
             <p><strong>Run ID:</strong> ${{ github.run_id }}</p>
-            <p><strong>Github id:</strong> $GITHUB_RUN_ID</p>
-            <p><strong>Github number:</strong> $GITHUB_RUN_NUMBER</p>
+            <p><strong>Run Number:</strong> ${{ github.run_number }}</p>
             <p><strong>Returned message:</strong> ${{ steps.decide.outputs.response_message }}</p>
 
       # 如果应该发送但未配置 SMTP_SERVER，写日志并跳过发送（由 smtp_check 步骤判断）
