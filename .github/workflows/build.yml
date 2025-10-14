@@ -280,8 +280,6 @@ jobs:
                
           if [ $rc -ne 0 ]; then
             echo "OCI CLI returned non-zero exit code: $rc"
-            echo "--- raw stderr (saved to oci_err.json) ---"
-            sed -n '1,200p' oci_err.json || true
 
             # 尝试从 stderr 中提取 JSON 部分并解析 message 字段
             err_json=$(awk 'BEGIN{p=0} { if(p==1) print; else if(match($0,/\{/)){print substr($0, RSTART); p=1} }' oci_err.json || true)
