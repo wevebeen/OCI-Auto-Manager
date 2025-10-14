@@ -128,4 +128,3 @@ oci compute instance launch \
 ---
 
 如需详细操作步骤或遇到问题，请参考 Oracle Cloud 官方文档或联系仓库维护者。
-```

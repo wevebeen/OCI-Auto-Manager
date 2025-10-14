@@ -304,29 +304,29 @@ jobs:
             # 同样写入 response.json，保持统一格式
             echo "{ \"message\": "$(printf '%s' "${lifecycle_state:-"SUCCEEDED"}" | jq -R .)" }" > response.json || true
             echo "RESPONSE_MESSAGE=${lifecycle_state:-SUCCEEDED}" >> $GITHUB_ENV || true
+
+            # 等待实例完全启动
+            echo "等待实例完全启动（最多等待5分钟）..."
+            sleep 300
+            
+            # 获取公网IP
+            echo "正在获取公网IP..."
+            public_ip=$(oci compute instance list-vnics \
+              --instance-id "$instance_id" \
+              --query 'data[0]."public-ip"' \
+              --raw-output)
+            
+            # 输出连接信息
+            echo "📋 实例连接信息："
+            echo "- 实例名称：$instance_name"
+            echo "- 实例ID：$instance_id"
+            echo "- 实例状态：$(oci compute instance get --instance-id $instance_id --query 'data["lifecycle-state"]' --raw-output)"
+            echo "- 私有IP：$private_ip"
+            echo "- 公网IP：$public_ip"
+            echo "- SSH用户名：ubuntu"
+            echo "- SSH连接命令：ssh ubuntu@$public_ip"
+            echo "- 注意：首次连接可能需要等待几分钟"
           fi
-          
-          # 等待实例完全启动
-          echo "等待实例完全启动（最多等待5分钟）..."
-          sleep 300
-          
-          # 获取公网IP
-          echo "正在获取公网IP..."
-          public_ip=$(oci compute instance list-vnics \
-            --instance-id "$instance_id" \
-            --query 'data[0]."public-ip"' \
-            --raw-output)
-          
-          # 输出连接信息
-          echo "📋 实例连接信息："
-          echo "- 实例名称：$instance_name"
-          echo "- 实例ID：$instance_id"
-          echo "- 实例状态：$(oci compute instance get --instance-id $instance_id --query 'data["lifecycle-state"]' --raw-output)"
-          echo "- 私有IP：$private_ip"
-          echo "- 公网IP：$public_ip"
-          echo "- SSH用户名：ubuntu"
-          echo "- SSH连接命令：ssh ubuntu@$public_ip"
-          echo "- 注意：首次连接可能需要等待几分钟"
 
       # ==========================================================================
       # 步骤6：决定是否发送邮件（仅当返回 message 与 repository 根目录的 message.json 不同时）
