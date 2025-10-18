@@ -1,6 +1,7 @@
 {
   "message":[
     "Out of host capacity.",
-    "Too many requests for the user"
+    "Too many requests for the user",
+    "The connection to endpoint timed out."
   ]
 }
