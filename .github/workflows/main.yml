@@ -206,13 +206,6 @@ jobs:
           echo "- 重试配置：最多 $MAX_RETRIES 次"
           echo "- 重试间隔：${RETRY_DELAY} 秒"
           
-          # 创建日志目录（仅在当前步骤使用，不会上传到仓库）
-          mkdir -p ./logs
-          rm -f ./logs/*.err.txt ./logs/*.json
-          
-          # 验证日志目录已创建
-          echo "✅ 日志目录创建成功"
-          
           # 验证必要的 secret
           if [ -z "${{ secrets.SSH_PUBLIC_KEY }}" ]; then
             echo "❌ SSH_PUBLIC_KEY 未配置"
@@ -256,35 +249,79 @@ jobs:
           fi
           echo "镜像ID：$image_id"
           
-          # 获取网络配置
+          # 获取网络配置（使用名称而不是OCID）
           echo "获取网络配置..."
-          vcn_id=$(oci network vcn list \
-            --compartment-id "${{ secrets.OCI_TENANCY }}" \
-            --query 'data[0]."id"' \
-            --raw-output 2>./logs/vcn_err.txt || echo "")
           
-          if [ -z "$vcn_id" ]; then
+          # 检查是否指定了VCN和Subnet名称
+          VCN_NAME="${{ secrets.VCN_NAME }}"
+          SUBNET_NAME="${{ secrets.SUBNET_NAME }}"
+          
+          # 如果没有指定，使用默认值或第一个找到的
+          if [ -z "$VCN_NAME" ]; then
+            echo "未指定VCN名称，使用第一个找到的VCN"
+            vcn_id=$(oci network vcn list \
+              --compartment-id "${{ secrets.OCI_TENANCY }}" \
+              --query 'data[0]."id"' \
+              --raw-output 2>./logs/vcn_err.txt || echo "")
+          else
+            echo "使用指定的VCN名称：$VCN_NAME"
+            vcn_id=$(oci network vcn list \
+              --compartment-id "${{ secrets.OCI_TENANCY }}" \
+              --query "data[?\"display-name\"=='$VCN_NAME'].id | [0]" \
+              --raw-output 2>./logs/vcn_err.txt || echo "")
+          fi
+          
+          if [ -z "$vcn_id" ] || [ "$vcn_id" == "null" ]; then
             echo "❌ 无法找到VCN"
             cat ./logs/vcn_err.txt 2>/dev/null || true
+            echo "💡 提示：请在Secrets中设置 VCN_NAME 或确保至少存在一个VCN"
             echo "response_message=vcn_not_found" >> $GITHUB_OUTPUT
             echo "error_category=network" >> $GITHUB_OUTPUT
             exit 1
           fi
           
-          subnet_id=$(oci network subnet list \
-            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+          # 获取VCN的显示名称（用于日志）
+          vcn_display_name=$(oci network vcn get \
             --vcn-id "$vcn_id" \
-            --query 'data[0]."id"' \
-            --raw-output 2>./logs/subnet_err.txt || echo "")
+            --query 'data."display-name"' \
+            --raw-output 2>/dev/null || echo "VCN-ID: $vcn_id")
           
-          if [ -z "$subnet_id" ]; then
+          echo "找到VCN：$vcn_display_name"
+          
+          # 查找Subnet
+          if [ -z "$SUBNET_NAME" ]; then
+            echo "未指定Subnet名称，使用第一个找到的Subnet"
+            subnet_id=$(oci network subnet list \
+              --compartment-id "${{ secrets.OCI_TENANCY }}" \
+              --vcn-id "$vcn_id" \
+              --query 'data[0]."id"' \
+              --raw-output 2>./logs/subnet_err.txt || echo "")
+          else
+            echo "使用指定的Subnet名称：$SUBNET_NAME"
+            subnet_id=$(oci network subnet list \
+              --compartment-id "${{ secrets.OCI_TENANCY }}" \
+              --vcn-id "$vcn_id" \
+              --query "data[?\"display-name\"=='$SUBNET_NAME'].id | [0]" \
+              --raw-output 2>./logs/subnet_err.txt || echo "")
+          fi
+          
+          if [ -z "$subnet_id" ] || [ "$subnet_id" == "null" ]; then
             echo "❌ 无法找到Subnet"
             cat ./logs/subnet_err.txt 2>/dev/null || true
+            echo "💡 提示：请在Secrets中设置 SUBNET_NAME 或确保VCN中存在至少一个Subnet"
             echo "response_message=subnet_not_found" >> $GITHUB_OUTPUT
             echo "error_category=network" >> $GITHUB_OUTPUT
             exit 1
           fi
-          echo "网络配置：VCN $vcn_id, Subnet $subnet_id"
+          
+          # 获取Subnet的显示名称（用于日志）
+          subnet_display_name=$(oci network subnet get \
+            --subnet-id "$subnet_id" \
+            --query 'data."display-name"' \
+            --raw-output 2>/dev/null || echo "Subnet-ID: $subnet_id")
+          
+          echo "找到Subnet：$subnet_display_name"
+          echo "✅ 网络配置已就绪"
           
           # 生成唯一实例名称
           instance_name="ubuntu-arm-4c24g-$(date +%Y%m%d-%H%M%S)"
@@ -366,57 +403,74 @@ jobs:
             else
               # 创建失败，分析错误类型
               echo "❌ 创建失败"
+              echo "退出代码：$create_rc"
+              
+              # 调试输出
+              echo "检查日志文件："
+              ls -la ./logs/ 2>/dev/null || echo "logs目录不存在"
               
               if [ -s ./logs/oci_err.json ]; then
+                echo "读取错误日志文件："
+                cat ./logs/oci_err.json || echo "无法读取日志文件"
+                
                 # 提取错误信息
-                err_json=$(cat ./logs/oci_err.json)
+                err_json=$(cat ./logs/oci_err.json 2>/dev/null)
                 error_code=$(echo "$err_json" | jq -r '.code // "Unknown"' 2>/dev/null || echo "Unknown")
                 error_message=$(echo "$err_json" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
                 
                 echo "错误代码：$error_code"
                 echo "错误信息：$error_message"
-                
-                # 分类错误
-                error_category="unknown"
-                should_retry="false"
-                
-                case "$error_message" in
-                  "Out of host capacity"*)
-                    error_category="capacity"
-                    should_retry="true"
-                    echo "💡 提示：这是容量不足错误，可以重试"
-                    ;;
-                  "NotAuthorizedOrNotFound")
-                    error_category="permission"
-                    should_retry="false"
-                    echo "💡 提示：权限不足，请检查IAM策略"
-                    ;;
-                  "InvalidParameter"*)
-                    error_category="configuration"
-                    should_retry="false"
-                    echo "💡 提示：配置参数错误"
-                    ;;
-                  "LimitExceeded"*)
-                    error_category="quota"
-                    should_retry="false"
-                    echo "💡 提示：超出服务限制"
-                    ;;
-                  "InternalError"*)
-                    error_category="service"
-                    should_retry="true"
-                    echo "💡 提示：OCI服务内部错误，可以重试"
-                    ;;
-                  *)
-                    error_category="unknown"
-                    should_retry="true"
-                    echo "💡 提示：未知错误，尝试重试"
-                    ;;
-                esac
-                
-                last_error="$error_message"
-                echo "error_category=$error_category" >> $GITHUB_OUTPUT
-                echo "error_message=$error_message" >> $GITHUB_OUTPUT
+              else
+                echo "⚠️ 错误日志文件不存在或为空"
+                echo "直接输出OCI CLI的错误："
+                # 尝试直接从命令输出获取错误
+                error_message="OCI CLI命令失败（退出代码：$create_rc）"
+                error_code="CommandFailed"
+                echo "错误代码：$error_code"
+                echo "错误信息：$error_message"
               fi
+              
+              # 分类错误（在if块外，避免重复）
+              error_category="unknown"
+              should_retry="false"
+              
+              case "$error_message" in
+                "Out of host capacity"*)
+                  error_category="capacity"
+                  should_retry="true"
+                  echo "💡 提示：这是容量不足错误，可以重试"
+                  ;;
+                "NotAuthorizedOrNotFound")
+                  error_category="permission"
+                  should_retry="false"
+                  echo "💡 提示：权限不足，请检查IAM策略"
+                  ;;
+                "InvalidParameter"*)
+                  error_category="configuration"
+                  should_retry="false"
+                  echo "💡 提示：配置参数错误"
+                  ;;
+                "LimitExceeded"*)
+                  error_category="quota"
+                  should_retry="false"
+                  echo "💡 提示：超出服务限制"
+                  ;;
+                "InternalError"*)
+                  error_category="service"
+                  should_retry="true"
+                  echo "💡 提示：OCI服务内部错误，可以重试"
+                  ;;
+                *)
+                  error_category="unknown"
+                  should_retry="true"
+                  echo "💡 提示：未知错误，尝试重试"
+                  ;;
+              esac
+              
+              # 保存错误信息
+              last_error="$error_message"
+              echo "error_category=$error_category" >> $GITHUB_OUTPUT
+              echo "error_message=$error_message" >> $GITHUB_OUTPUT
               
               # 决定是否重试
               if [ "$should_retry" = "true" ] && [ $attempt -lt $MAX_RETRIES ]; then
@@ -551,24 +605,4 @@ jobs:
         if: steps.decide.outputs.should_send == 'true' && steps.smtp-check.outputs.smtp_configured == 'false'
         run: |
           echo "⚠️  应该发送邮件但SMTP未配置"
-
-      # ==========================================================================
-      # 步骤8：清理日志文件（安全措施）
-      # ==========================================================================
-      - name: Clean up log files
-        if: always()
-        run: |
-          echo "=== 清理日志文件 ==="
-          
-          # 删除可能包含敏感信息的日志文件
-          if [ -d "./logs" ]; then
-            echo "清理 logs 目录..."
-            rm -rf ./logs
-            echo "✅ 日志文件已清理"
-          fi
-          
-          # 确保没有遗留的敏感文件
-          rm -f oci_err.json response.json instance_list_err.json
-          
-          echo "✅ 清理完成"
 
