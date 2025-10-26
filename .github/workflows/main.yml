@@ -1,0 +1,547 @@
+name: OCI Ubuntu ARM Instance Auto-Manager
+
+# 触发条件
+on:
+  # 定时触发：每2小时运行一次（整点执行）
+  schedule:
+    - cron: '0 */2 * * *'
+  # 手动触发：允许通过GitHub界面手动运行
+  workflow_dispatch:
+    inputs:
+      manual_trigger_reason:
+        description: '手动触发原因'
+        required: false
+        default: '测试或紧急操作'
+      skip_instance_check:
+        description: '跳过实例检查（直接尝试创建）'
+        required: false
+        type: boolean
+        default: false
+      max_retries:
+        description: '最大重试次数'
+        required: false
+        type: choice
+        options:
+          - '3'
+          - '5'
+          - '10'
+        default: '3'
+
+jobs:
+  manage-oci-instances:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+
+    steps:
+      # ==========================================================================
+      # 步骤1：检出代码仓库
+      # ==========================================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ==========================================================================
+      # 步骤2：配置OCI认证信息
+      # 所需Secrets：
+      # - OCI_USER: Oracle Cloud用户OCID
+      # - OCI_TENANCY: Oracle Cloud租户OCID
+      # - OCI_FINGERPRINT: API密钥指纹
+      # - OCI_REGION: 区域标识符（如：us-ashburn-1）
+      # - OCI_PRIVATE_KEY: API私钥内容（PEM格式）
+      # ==========================================================================
+      - name: Configure OCI authentication
+        run: |
+          echo "=== 配置OCI认证信息 ==="
+          
+          # 创建OCI配置目录
+          mkdir -p ~/.oci
+          
+          # 生成OCI配置文件
+          cat > ~/.oci/config << 'CONFIG_EOF'
+          [DEFAULT]
+          user=${{ secrets.OCI_USER }}
+          tenancy=${{ secrets.OCI_TENANCY }}
+          fingerprint=${{ secrets.OCI_FINGERPRINT }}
+          region=${{ secrets.OCI_REGION }}
+          key_file=~/.oci/oci_api_key.pem
+          CONFIG_EOF
+          
+          # 验证私钥是否存在
+          if [ -z "${{ secrets.OCI_PRIVATE_KEY }}" ]; then
+            echo "❌ OCI_PRIVATE_KEY secret is empty or not available"
+            echo "提示："
+            echo "   - 检查仓库 Secrets 配置"
+            echo "   - 如果这是 fork 的 PR，GitHub 不会注入 Secrets"
+            exit 1
+          fi
+
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/oci_api_key.pem
+
+          # 设置文件权限（OCI CLI 安全要求）
+          chmod 600 ~/.oci/config
+          chmod 600 ~/.oci/oci_api_key.pem
+
+          # 验证文件
+          echo "配置验证："
+          echo "- 配置文件大小: $(wc -c < ~/.oci/config) bytes"
+          echo "- 私钥文件大小: $(wc -c < ~/.oci/oci_api_key.pem) bytes"
+          echo "- 私钥末行: '$(tail -n 1 ~/.oci/oci_api_key.pem)'"
+          
+          echo "✅ OCI认证配置完成"
+
+      # ==========================================================================
+      # 步骤3：安装OCI CLI工具
+      # ==========================================================================
+      - name: Install OCI CLI
+        run: |
+          echo "=== 安装OCI CLI工具 ==="
+          
+          # 下载并安装OCI CLI
+          curl -L https://raw.githubusercontent.com/oracle/oci-cli/master/scripts/install/install.sh | bash -s -- --accept-all-defaults
+          
+          # 配置环境变量
+          echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc
+          source ~/.bashrc
+          
+          # 将 OCI CLI 路径添加到 GITHUB_PATH
+          echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH="$HOME/bin:$PATH"
+          
+          # 验证安装
+          oci --version
+          echo "✅ OCI CLI安装完成"
+
+      # ==========================================================================
+      # 步骤3.1：测试认证（可选）
+      # ==========================================================================
+      - name: Test OCI connection
+        continue-on-error: true
+        run: |
+          echo "=== 测试OCI连接 ==="
+          
+          # 测试用户权限
+          user_info=$(oci iam user get --user-id "${{ secrets.OCI_USER }}" 2>&1 || true)
+          if echo "$user_info" | grep -q "ServiceError"; then
+            echo "⚠️  用户认证可能存在问题"
+          else
+            echo "✅ 用户认证成功"
+          fi
+
+      # ==========================================================================
+      # 步骤4：检查现有实例状态（可跳过）
+      # 逻辑：如果存在非TERMINATED的实例，终止工作流
+      # ==========================================================================
+      - name: Check existing instances
+        if: ${{ !github.event.inputs.skip_instance_check }}
+        id: check-instances
+        run: |
+          echo "=== 检查现有实例状态 ==="
+          
+          # 创建错误日志文件
+          mkdir -p ./logs
+          rm -f ./logs/instance_list_err.json
+          
+          # 列出所有实例
+          set +e
+          instances_json=$(oci compute instance list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --all \
+            --output json 2>./logs/instance_list_err.json)
+          rc=$?
+          set -e
+          
+          if [ $rc -ne 0 ]; then
+            echo "❌ 无法列出实例"
+            if [ -s ./logs/instance_list_err.json ]; then
+              echo "错误详情："
+              cat ./logs/instance_list_err.json
+            fi
+            exit 1
+          fi
+          
+          # 检查返回的JSON是否为空
+          instances_json=${instances_json:-'[]'}
+          
+          # 过滤掉TERMINATED状态的实例
+          non_terminated=$(echo "$instances_json" | jq '[.[]? | select(.state != "TERMINATED")]' 2>/dev/null || echo '[]')
+          non_terminated_count=$(echo "$non_terminated" | jq 'length')
+          total_count=$(echo "$instances_json" | jq 'length')
+          
+          echo "发现实例：总计 $total_count 个，活跃（非终止）$non_terminated_count 个"
+          
+          if [ "$non_terminated_count" -gt 0 ]; then
+            echo ""
+            echo "❌ 存在活跃实例，将终止工作流"
+            echo "活跃实例列表："
+            echo "$non_terminated" | jq -r '.[] | "  - \(.display_name // .id): \(.shape) - \(.state)"'
+            echo ""
+            echo "应该发送邮件通知：instance_already_exists"
+            echo "should_send=true" >> $GITHUB_OUTPUT
+            echo "response_message=instance_already_exists" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "✅ 没有活跃实例，可以继续创建"
+            echo "should_send=false" >> $GITHUB_OUTPUT
+            echo "response_message=" >> $GITHUB_OUTPUT
+          fi
+
+      # ==========================================================================
+      # 步骤5：创建新的Ubuntu ARM实例（带重试逻辑）
+      # ==========================================================================
+      - name: Create Ubuntu ARM instance with retry
+        id: create-instance
+        env:
+          MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
+          RETRY_DELAY: 120
+        run: |
+          echo "=== 创建Ubuntu ARM实例（带重试逻辑） ==="
+          echo "配置："
+          echo "- 实例类型：VM.Standard.A1.Flex"
+          echo "- CPU配置：4 OCPU"
+          echo "- 内存配置：24 GB"
+          echo "- 架构：ARM (Ampere A1)"
+          echo "- 系统：Ubuntu 22.04"
+          echo "- 重试配置：最多 $MAX_RETRIES 次"
+          echo "- 重试间隔：${RETRY_DELAY} 秒"
+          
+          # 验证必要的 secret
+          if [ -z "${{ secrets.SSH_PUBLIC_KEY }}" ]; then
+            echo "❌ SSH_PUBLIC_KEY 未配置"
+            echo "response_message=ssh_key_missing" >> $GITHUB_OUTPUT
+            echo "error_category=configuration" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          # 获取可用性域
+          echo "获取可用性域..."
+          ad=$(oci iam availability-domain list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --query 'data[0]."name"' \
+            --raw-output 2>./logs/ad_err.txt || echo "")
+          
+          if [ -z "$ad" ]; then
+            echo "❌ 无法获取可用性域"
+            cat ./logs/ad_err.txt 2>/dev/null || true
+            echo "response_message=availability_domain_error" >> $GITHUB_OUTPUT
+            echo "error_category=infrastructure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "可用性域：$ad"
+          
+          # 获取镜像ID
+          echo "获取Ubuntu 22.04 ARM镜像..."
+          image_id=$(oci compute image list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --operating-system "Canonical Ubuntu" \
+            --operating-system-version "22.04" \
+            --all \
+            --query "data[0].id" \
+            --raw-output 2>./logs/image_err.txt || echo "")
+          
+          if [ -z "$image_id" ] || [ "$image_id" == "null" ]; then
+            echo "❌ 无法找到Ubuntu 22.04镜像"
+            cat ./logs/image_err.txt 2>/dev/null || true
+            echo "response_message=image_not_found" >> $GITHUB_OUTPUT
+            echo "error_category=resource" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "镜像ID：$image_id"
+          
+          # 获取网络配置
+          echo "获取网络配置..."
+          vcn_id=$(oci network vcn list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --query 'data[0]."id"' \
+            --raw-output 2>./logs/vcn_err.txt || echo "")
+          
+          if [ -z "$vcn_id" ]; then
+            echo "❌ 无法找到VCN"
+            cat ./logs/vcn_err.txt 2>/dev/null || true
+            echo "response_message=vcn_not_found" >> $GITHUB_OUTPUT
+            echo "error_category=network" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          subnet_id=$(oci network subnet list \
+            --compartment-id "${{ secrets.OCI_TENANCY }}" \
+            --vcn-id "$vcn_id" \
+            --query 'data[0]."id"' \
+            --raw-output 2>./logs/subnet_err.txt || echo "")
+          
+          if [ -z "$subnet_id" ]; then
+            echo "❌ 无法找到Subnet"
+            cat ./logs/subnet_err.txt 2>/dev/null || true
+            echo "response_message=subnet_not_found" >> $GITHUB_OUTPUT
+            echo "error_category=network" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "网络配置：VCN $vcn_id, Subnet $subnet_id"
+          
+          # 生成唯一实例名称
+          instance_name="ubuntu-arm-4c24g-$(date +%Y%m%d-%H%M%S)"
+          echo "实例名称：$instance_name"
+          
+          # 创建错误日志目录
+          mkdir -p ./logs
+          
+          # 重试循环
+          success=false
+          last_error=""
+          
+          for attempt in $(seq 1 $MAX_RETRIES); do
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "尝试 $attempt / $MAX_RETRIES"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            
+            # 清空之前的错误日志
+            rm -f ./logs/oci_err.json ./logs/response.json
+            
+            # 尝试创建实例
+            set +e
+            instance_response=$(oci compute instance launch \
+              --availability-domain "$ad" \
+              --compartment-id "${{ secrets.OCI_TENANCY }}" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"ocpus": 4, "memoryInGBs": 24}' \
+              --display-name "$instance_name" \
+              --image-id "$image_id" \
+              --subnet-id "$subnet_id" \
+              --ssh-authorized-keys-file <(echo "${{ secrets.SSH_PUBLIC_KEY }}") \
+              --assign-public-ip true \
+              --query 'data' \
+              --raw-output 2>./logs/oci_err.json)
+            create_rc=$?
+            set -e
+            
+            if [ $create_rc -eq 0 ] && [ -n "$instance_response" ]; then
+              # 成功创建
+              echo "✅ 实例创建成功！"
+              
+              instance_id=$(echo "$instance_response" | jq -r '.id' || echo "")
+              lifecycle_state=$(echo "$instance_response" | jq -r '."lifecycle-state"' || echo "")
+              private_ip=$(echo "$instance_response" | jq -r '.primary_vnic["private-ip"]' || echo "")
+              
+              echo "实例信息："
+              echo "- 实例ID：$instance_id"
+              echo "- 状态：$lifecycle_state"
+              echo "- 私有IP：$private_ip"
+              
+              # 等待实例启动
+              echo "等待实例启动（最多5分钟）..."
+              sleep 300
+              
+              # 获取公网IP
+              public_ip=""
+              if [ -n "$instance_id" ]; then
+                public_ip=$(oci compute instance list-vnics \
+                  --instance-id "$instance_id" \
+                  --query 'data[0]."public-ip"' \
+                  --raw-output 2>/dev/null || echo "")
+              fi
+              
+              echo ""
+              echo "📋 连接信息："
+              echo "- 实例ID：$instance_id"
+              echo "- 公网IP：$public_ip"
+              echo "- SSH命令：ssh ubuntu@$public_ip"
+              echo ""
+              echo "✅ 完成"
+              
+              success=true
+              echo "response_message=success" >> $GITHUB_OUTPUT
+              echo "instance_id=$instance_id" >> $GITHUB_OUTPUT
+              echo "public_ip=$public_ip" >> $GITHUB_OUTPUT
+              break
+              
+            else
+              # 创建失败，分析错误类型
+              echo "❌ 创建失败"
+              
+              if [ -s ./logs/oci_err.json ]; then
+                # 提取错误信息
+                err_json=$(cat ./logs/oci_err.json)
+                error_code=$(echo "$err_json" | jq -r '.code // "Unknown"' 2>/dev/null || echo "Unknown")
+                error_message=$(echo "$err_json" | jq -r '.message // "Unknown error"' 2>/dev/null || echo "Unknown error")
+                
+                echo "错误代码：$error_code"
+                echo "错误信息：$error_message"
+                
+                # 分类错误
+                error_category="unknown"
+                should_retry="false"
+                
+                case "$error_message" in
+                  "Out of host capacity"*)
+                    error_category="capacity"
+                    should_retry="true"
+                    echo "💡 提示：这是容量不足错误，可以重试"
+                    ;;
+                  "NotAuthorizedOrNotFound")
+                    error_category="permission"
+                    should_retry="false"
+                    echo "💡 提示：权限不足，请检查IAM策略"
+                    ;;
+                  "InvalidParameter"*)
+                    error_category="configuration"
+                    should_retry="false"
+                    echo "💡 提示：配置参数错误"
+                    ;;
+                  "LimitExceeded"*)
+                    error_category="quota"
+                    should_retry="false"
+                    echo "💡 提示：超出服务限制"
+                    ;;
+                  "InternalError"*)
+                    error_category="service"
+                    should_retry="true"
+                    echo "💡 提示：OCI服务内部错误，可以重试"
+                    ;;
+                  *)
+                    error_category="unknown"
+                    should_retry="true"
+                    echo "💡 提示：未知错误，尝试重试"
+                    ;;
+                esac
+                
+                last_error="$error_message"
+                echo "error_category=$error_category" >> $GITHUB_OUTPUT
+                echo "error_message=$error_message" >> $GITHUB_OUTPUT
+              fi
+              
+              # 决定是否重试
+              if [ "$should_retry" = "true" ] && [ $attempt -lt $MAX_RETRIES ]; then
+                echo "⏳ 等待 ${RETRY_DELAY} 秒后重试..."
+                sleep $RETRY_DELAY
+              elif [ "$should_retry" = "false" ]; then
+                echo "❌ 不可重试的错误，终止"
+                break
+              fi
+            fi
+          done
+          
+          # 如果所有重试都失败了
+          if [ "$success" = "false" ]; then
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "❌ 所有尝试均失败"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "最后错误：$last_error"
+            echo ""
+            echo "💡 建议："
+            echo "1. 检查OCI控制台中的服务配额"
+            echo "2. 尝试不同的区域（us-phoenix-1 或 us-ashburn-1）"
+            echo "3. 减少资源需求（如改为 2 OCPU + 12 GB）"
+            echo "4. 等待数小时后重试"
+            echo "5. 检查IAM权限策略"
+            echo ""
+            
+            # 设置错误响应
+            echo "response_message=$last_error" >> $GITHUB_OUTPUT
+            echo "error_category=${error_category:-unknown}" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+
+      # ==========================================================================
+      # 步骤6：决定是否发送邮件通知
+      # ==========================================================================
+      - name: Decide email notification
+        id: decide
+        run: |
+          echo "=== 决定是否发送邮件通知 ==="
+          
+          # 读取仓库的 message.json（如果存在）
+          if [ -f message.json ]; then
+            repo_messages=$(jq -c '.message // []' message.json || echo '[]')
+            echo "仓库消息配置：$repo_messages"
+          else
+            repo_messages='[]'
+            echo "未找到 message.json，将不比较"
+          fi
+          
+          # 获取响应消息
+          response_message="${{ steps.create-instance.outputs.response_message }}"
+          
+          # 如果实例检查失败，使用其输出
+          if [ -z "$response_message" ] && [ -n "${{ steps.check-instances.outputs.response_message }}" ]; then
+            response_message="${{ steps.check-instances.outputs.response_message }}"
+          fi
+          
+          echo "响应消息：$response_message"
+          
+          if [ -z "$response_message" ] || [ "$response_message" = "success" ]; then
+            echo "✅ 成功，不需要发送邮件"
+            echo "should_send=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          # 检查是否在已知消息列表中
+          if [ "$repo_messages" != "[]" ]; then
+            contains=$(echo "$repo_messages" | jq --arg rm "$response_message" 'index($rm) != null' 2>/dev/null || echo "false")
+            
+            if [ "$contains" = "true" ]; then
+              echo "消息在配置列表中，不发送"
+              echo "should_send=false" >> $GITHUB_OUTPUT
+            else
+              echo "新错误消息，需要发送邮件"
+              echo "should_send=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            # 如果没有配置文件，默认发送
+            echo "未配置消息列表，发送邮件"
+            echo "should_send=true" >> $GITHUB_OUTPUT
+          fi
+          
+          echo "response_message=$response_message" >> $GITHUB_OUTPUT
+
+      # ==========================================================================
+      # 步骤7：发送邮件通知
+      # ==========================================================================
+      - name: Check SMTP configuration
+        id: smtp-check
+        run: |
+          if [ -z "${{ secrets.SMTP_SERVER }}" ] || [ -z "${{ secrets.EMAIL_TO }}" ]; then
+            echo "smtp_configured=false" >> $GITHUB_OUTPUT
+            echo "⚠️  SMTP未完全配置"
+          else
+            echo "smtp_configured=true" >> $GITHUB_OUTPUT
+            echo "✅ SMTP已配置"
+          fi
+
+      - name: Send email notification
+        if: steps.decide.outputs.should_send == 'true' && steps.smtp-check.outputs.smtp_configured == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT || '587' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: '[OCI Auto-Manager] 实例管理工作流状态'
+          to: ${{ secrets.EMAIL_TO }}
+          from: ${{ secrets.SMTP_USERNAME }}
+          body: |
+            OCI ARM实例管理工作流执行状态报告
+            
+            工作流信息：
+            - 运行ID：${{ github.run_id }}
+            - 运行编号：${{ github.run_number }}
+            - 触发原因：${{ github.event_name }}
+            ${{ github.event_name == 'workflow_dispatch' && format('- 手动触发原因：{0}', github.event.inputs.manual_trigger_reason) || '' }}
+            
+            执行结果：
+            - 状态：{{ steps.decide.outputs.response_message }}
+            ${{ steps.create-instance.outputs.instance_id && format('- 实例ID：{0}', steps.create-instance.outputs.instance_id) || '' }}
+            ${{ steps.create-instance.outputs.public_ip && format('- 公网IP：{0}', steps.create-instance.outputs.public_ip) || '' }}
+            ${{ steps.create-instance.outputs.error_category && format('- 错误类别：{0}', steps.create-instance.outputs.error_category) || '' }}
+            
+            当前时间：$(date '+%Y-%m-%d %H:%M:%S')
+            
+            查看详细日志：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Log skipped email
+        if: steps.decide.outputs.should_send == 'true' && steps.smtp-check.outputs.smtp_configured == 'false'
+        run: |
+          echo "⚠️  应该发送邮件但SMTP未配置"
+
