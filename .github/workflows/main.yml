@@ -206,6 +206,13 @@ jobs:
           echo "- 重试配置：最多 $MAX_RETRIES 次"
           echo "- 重试间隔：${RETRY_DELAY} 秒"
           
+          # 创建日志目录（仅在当前步骤使用，不会上传到仓库）
+          mkdir -p ./logs
+          rm -f ./logs/*.err.txt ./logs/*.json
+          
+          # 验证日志目录已创建
+          echo "✅ 日志目录创建成功"
+          
           # 验证必要的 secret
           if [ -z "${{ secrets.SSH_PUBLIC_KEY }}" ]; then
             echo "❌ SSH_PUBLIC_KEY 未配置"
@@ -544,4 +551,24 @@ jobs:
         if: steps.decide.outputs.should_send == 'true' && steps.smtp-check.outputs.smtp_configured == 'false'
         run: |
           echo "⚠️  应该发送邮件但SMTP未配置"
+
+      # ==========================================================================
+      # 步骤8：清理日志文件（安全措施）
+      # ==========================================================================
+      - name: Clean up log files
+        if: always()
+        run: |
+          echo "=== 清理日志文件 ==="
+          
+          # 删除可能包含敏感信息的日志文件
+          if [ -d "./logs" ]; then
+            echo "清理 logs 目录..."
+            rm -rf ./logs
+            echo "✅ 日志文件已清理"
+          fi
+          
+          # 确保没有遗留的敏感文件
+          rm -f oci_err.json response.json instance_list_err.json
+          
+          echo "✅ 清理完成"
 
